@@ -274,8 +274,6 @@ As a result, although both approaches have theoretical complexity $O(N)$, **the 
 
 ## 11. Conclusion
 
-## 11. Conclusion
-
 In this laboratory work, a **fully functional GPU-based Radix Sort** was implemented using CUDA. The implementation:
 
 * Correctly handles signed integers

@@ -143,19 +143,28 @@ This implementation is used for both **performance comparison** and **correctnes
 The custom implementation consists of the following GPU stages per bit:
 
 1. **Predicate Kernel**
-
+   
    * One thread per element
-   * Extracts current bit
-2. **Prefix-Sum (Scan)**
+   * Extracts the current bit
+   * Inverts the most significant bit for signed integers
 
-   * Implemented using `thrust::exclusive_scan`
+2. **Two-Level Exclusive Prefix-Sum (Scan)**
+
+   * **Block-level scan** using a Hillis–Steele algorithm in shared memory
+   * **Block sums collected** and scanned on the host
+   * **Offsets added** back to each block to form a global exclusive scan
+   * Entire process avoids `thrust::exclusive_scan` and ensures correctness for any array size
+
 3. **Scatter Kernel**
 
-   * Computes final positions
-   * Writes to output buffer
+   * Computes final output positions using the global scan and predicate
+   * Writes elements to the output buffer according to bit value
+   * Correctly separates zeros and ones for each bit
+
 4. **Buffer Swap**
 
-   * Alternates input/output arrays
+   * Input and output buffers are swapped after each bit pass
+   * Ensures the next bit operates on the partially sorted array
 
 All intermediate data structures (predicate array, scan array) reside in **global memory**.
 
@@ -190,10 +199,10 @@ Each measurement reflects the **average of multiple runs**.
 
 |  Array Size | CPU std::sort (ms) | CPU qsort (ms) | GPU thrust::sort (ms) | GPU Radix Sort (ms) |
 | ----------: | -----------------: | -------------: | --------------------: | ------------------: |
-|     100,000 |               5.48 |           8.14 |              **0.17** |                1.96 |
-|   1,000,000 |              65.44 |          95.01 |              **0.61** |               15.21 |
-|  10,000,000 |             780.88 |        1095.73 |              **3.52** |               71.30 |
-| 100,000,000 |            8850.89 |       15896.20 |             **69.34** |              626.36 |
+|     100,000 |             5.5121 |         7.6491 |                0.1959 |              2.2974 |
+|   1,000,000 |            64.6251 |        90.2845 |                0.7686 |             17.3565 |
+|  10,000,000 |           771.8870 |      1045.3500 |                3.5579 |             94.8416 |
+| 100,000,000 |          8855.9400 |     11767.4000 |               33.5803 |            806.5850 |
 
 ---
 
@@ -213,45 +222,57 @@ The final implementation **passes correctness checks for all tested input sizes*
 
 ### 10.1 Kernel Launch and Scan Overhead
 
-The custom Radix Sort performs:
+The custom Radix Sort now uses a **manual two-level exclusive scan**, which changes the kernel execution pattern:
 
-* **32 kernel launches** for predicate computation
-* **32 prefix-sum operations**
-* **32 scatter kernel launches**
+* **32 predicate kernel launches** (one per bit)
+* **32 block-scan kernel launches** for per-block Hillis–Steele scans
+* **32 block-offset addition kernel launches** to compute global scan
+* **32 scatter kernel launches** to reorder elements
 
-This results in **significant kernel launch and synchronization overhead**, which dominates execution time for moderate input sizes.
+Although the manual scan ensures correctness for all input sizes, it introduces **additional kernel launches and host-device synchronizations** compared to the previous `thrust::exclusive_scan` approach. This overhead dominates the execution time, especially for small to moderate arrays.
 
 ---
 
 ### 10.2 Memory Access Behavior
 
-Key observations:
+Key observations with the manual scan:
 
-* All intermediate arrays are stored in **global memory**
-* Each element is:
+* **Predicate, scan, and block-sum arrays reside in global memory**
+* **Shared memory** is used only for per-block scans, not for the scatter phase
+* Each element is read and written multiple times per bit:
 
-  * Read multiple times
-  * Written multiple times per bit
-* No shared-memory reuse
-* No coalesced multi-bit processing
+  * Read by predicate kernel
+  * Read/written by block-scan kernel
+  * Read/written by scatter kernel
 
-This leads to **high global memory traffic**, which limits performance.
+* No multi-bit processing is performed
+* Global memory accesses remain largely uncoalesced for small arrays
+
+These factors lead to **high global memory traffic** and increased latency, which explains why the GPU Radix Sort is slower than `thrust::sort` for moderate input sizes despite correct results.
 
 ---
 
 ### 10.3 Comparison with `thrust::sort`
 
-`thrust::sort` significantly outperforms the naive implementation due to:
+`thrust::sort` continues to significantly outperform the custom Radix Sort because:
 
-* Processing **multiple bits per pass**
-* Reduced number of kernel launches
-* Efficient shared-memory usage
-* Warp-level primitives
-* Architecture-specific optimizations
+* It processes **multiple bits per pass**, reducing the number of iterations
+* Fewer kernel launches and synchronizations are required
+* Makes extensive use of **shared memory** and **warp-level primitives**
+* Applies architecture-specific optimizations such as coalesced memory access and load balancing
 
-Although both algorithms have theoretical complexity $O(N)$, **constant factors dominate real-world GPU performance**.
+In contrast, the manual two-level scan in the custom implementation:
+
+* Requires **additional kernel launches** per bit (block scan + block offsets)
+* Introduces **host-device memory transfers** for block sums
+* Maintains all intermediate arrays in **global memory**
+* Processes only **one bit per pass**
+
+As a result, although both approaches have theoretical complexity $O(N)$, **the custom implementation has larger constant overheads**, which dominate GPU execution time for arrays of size $10^5$–$10^8$, explaining the performance gap observed in the results.
 
 ---
+
+## 11. Conclusion
 
 ## 11. Conclusion
 
@@ -259,16 +280,16 @@ In this laboratory work, a **fully functional GPU-based Radix Sort** was impleme
 
 * Correctly handles signed integers
 * Demonstrates GPU acceleration over CPU-based sorting
-* Provides a clear comparison against a highly optimized library solution
+* Allows comparison with a highly optimized library solution
 
-While the custom Radix Sort does not outperform `thrust::sort`, it successfully illustrates:
+Although the custom Radix Sort does not outperform `thrust::sort`, it clearly illustrates:
 
 * The structure of scan-based parallel algorithms
-* The performance impact of kernel launch overhead
-* The importance of memory hierarchy optimization in CUDA
+* The impact of kernel launch and synchronization overhead
+* The role of memory hierarchy and global memory usage in performance
 
-This work highlights a key practical insight:
+This work emphasizes a key practical insight:
 
-> **Correct parallel algorithms are not necessarily efficient without careful consideration of GPU architecture and memory behavior.**
+> **A correct parallel algorithm may still be inefficient without careful consideration of GPU architecture and memory behavior.**
 
 ---

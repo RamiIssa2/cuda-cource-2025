@@ -29,37 +29,17 @@ void matmul_tiled_kernel(const float* __restrict__ A,
     float acc = 0.0f;
 
     // Number of tiles along the K / N dimension
-    int fullTilesNum = N / TILE_DIM;          
-    int remainder = N % TILE_DIM;          
+    int numTiles = (N + TILE_DIM - 1) / TILE_DIM;
 
-    for (int t = 0; t < fullTilesNum; ++t)
+    for (int t = 0; t < numTiles; ++t)
     {
+        int aCol = t * TILE_DIM + threadIdx.x;
+        int bRow = t * TILE_DIM + threadIdx.y;
+
         int thread_x = threadIdx.x;
         int thread_y = threadIdx.y;
-
-        As[thread_y][thread_x] = A[(row * N) + (t * TILE_DIM) + thread_x];
-        Bs[thread_y][thread_x] = B[(t * TILE_DIM + thread_y) * K + col];
-
-        __syncthreads();
-
-        #pragma unroll
-        for (int k = 0; k < TILE_DIM; ++k)
-            acc += As[thread_y][k] * Bs[k][thread_x];
-
-        __syncthreads();
-    }
-
-    if (remainder > 0)
-    {
-        int t = fullTilesNum;
-        int thread_x = threadIdx.x;
-        int thread_y = threadIdx.y;
-
-        int aCol = (t * TILE_DIM) + thread_x;
-        int bRow = (t * TILE_DIM) + thread_y;
 
         As[thread_y][thread_x] = (row < M && aCol < N) ? A[row * N + aCol] : 0.0f;
-
         Bs[thread_y][thread_x] = (bRow < N && col < K) ? B[bRow * K + col] : 0.0f;
 
         __syncthreads();
